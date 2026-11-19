@@ -12,4 +12,10 @@ The model deduplicates unchanged snapshots and fits robust lines to logit rates 
 
 An initial tiny cohort needs a separate treatment: a documented launch-night refresh expanded the denominator roughly sixfold. Before any refresh has been seen, a dilution prior and an unrefreshed upper-tail component describe that uncertainty. This launch-only prior is disabled when updated observations arrive. Fewer than three observations use the specified persistence fallback.
 
-The kit supplies no answering reference or supported local grade. Official practice pinball loss, typical miss and coverage therefore remain unmeasured until a server grade. Synthetic stress checks are development diagnostics, not official scores or proof of final calibration.
+The kit supplies no answering reference or supported local grade. Official practice pinball loss, typical miss and coverage therefore remain unmeasured until a server grade. Synthetic stress checks are development diagnostics, not official scores or proof of final calibration. No competition entry is submitted by the validation script.
+
+## Validation
+
+After committing changes, run `python3 validate.py --input ../gta6-trophy-rarity-forecast-01-kit/gta6-trophy-rarity-forecast-01-kit/input`. The script runs the actual entrypoint twice in isolated Python mode, validates all 55 trophy rows per practice case, checks edge cases and reports separately labeled synthetic refresh and growth tests. It can also score a supplied answer file with `--answers answers.json`; that file must map each case id to a mapping of trophy id to actual percentage.
+
+The starter's official practice benchmark is approximately 1.51 logit pinball loss, 0.68 percentage points of median error and zero 90% coverage, as reported by the kit. We do not claim an official score from synthetic tests. Both practice cases share a stale initial snapshot and are not independent calibration experiments. Forecast ceilings and late-unlock uncertainty remain modeling assumptions to test against the final dataset.

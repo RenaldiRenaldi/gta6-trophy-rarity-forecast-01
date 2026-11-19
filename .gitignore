@@ -4,3 +4,5 @@ out/
 *.tar.gz
 *.bundle
 .env
+.venv/
+.DS_Store

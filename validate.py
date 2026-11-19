@@ -151,11 +151,20 @@ def edge_checks(template):
     for row in case["history"]:
         row["rates"] = [None if i % 4 == 0 else 0 if i % 4 == 1 else 100 if i % 4 == 2 else r for i, r in enumerate(row["rates"])]
     check_shape(case, main.forecast(case))
+    assert main.forecast(case)["trophies"][1]["q"][0] == 0
     # A line rising on the requested log-time scale must extrapolate upward.
     points = [(h, main.percent(-8 + 1.3 * math.log1p(h))) for h in (5, 12, 24, 36, 48, 59)]
     anchor, slope, _, distance, _ = main.robust_line(points, 168)
     assert abs(slope - 1.3) < 1e-8 and distance > 0
     assert main.percent(anchor + slope * distance) > points[-1][1]
+    # Duplicating a stale observation cannot create new fitted information.
+    repeated = copy.deepcopy(template)
+    repeated["history"].extend(copy.deepcopy(repeated["history"][-1:]) * 20)
+    assert main.forecast(repeated) == main.forecast(template)
+    # Sparse input follows the specified baseline, including its rounding.
+    sparse = copy.deepcopy(template)
+    sparse["history"] = sparse["history"][:2]
+    assert main.forecast(sparse) == baseline(sparse)
     return {"sparse_and_null_cases": "pass", "log_time_slope_recovery": "pass"}
 
 

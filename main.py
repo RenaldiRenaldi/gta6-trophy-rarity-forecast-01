@@ -96,7 +96,7 @@ def launch_refresh(last, group, days, population):
     # RULES documents a roughly sixfold first refresh, not a trophy answer table.
     dilution = min(0.65, max(0.08, population / 3868))
     center = logodds(last * dilution)
-    spread = math.hypot(0.58, 0.5 * math.sqrt(days))
+    spread = math.hypot(0.50, 0.5 * math.sqrt(days))
     if group == "platinum":
         center -= 0.12
         spread = math.hypot(spread, 0.25)
@@ -119,7 +119,7 @@ def forecast(case):
         group = kind(trophy)
         last = float(available[-1]["rates"][index]) if available else 0.01
         if len(available) < 3:
-            q = [round(percent(logodds(last) + z * rw), 6) for z in ZS]
+            q = [round(percent(logodds(last) + z * rw), 4) for z in (-1.645, -0.674, 0, 0.674, 1.645)]
             rows.append({"id": trophy["id"], "q": q})
             continue
         population = max(1, available[-1].get("players_tracked", 1))
@@ -154,9 +154,17 @@ def forecast(case):
                         saturated = ceiling * percent(logodds(scaled) + growth) / 100
                         components.append((weight * 0.35, logodds(saturated), spread))
                         weight *= 0.65
+                    # A rounded zero may hide a delayed unlock wave. Keep a
+                    # separate upside component rather than infer no progress.
+                    if last <= 0.02 and days >= 1 and group != "intro":
+                        components.append((weight * 0.25, anchor + growth + 1.4, math.hypot(spread, 0.7)))
+                        weight *= 0.75
                     components.append((weight, anchor + growth, spread))
                 q = mixture_quantiles(components)
-        if group == "intro" and last >= 99.99:
+        # Coverage uses raw percentages even though scoring clips endpoints.
+        if last == 0:
+            q[0] = 0.0
+        if last >= 99.99:
             q[-1] = 100.0
         rows.append({"id": trophy["id"], "q": q})
     others = [r for r, t in zip(rows, case["trophies"]) if t.get("tier") != "platinum"]
