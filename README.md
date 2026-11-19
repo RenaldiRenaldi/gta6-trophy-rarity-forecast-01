@@ -8,25 +8,72 @@ Deterministic Python forecasts of Exophase trophy earn rates, with five quantile
 
 Run `MAKEFUN_INPUT_DIR=input MAKEFUN_OUTPUT_DIR=out python3 main.py` with Python 3.13. All dependencies are in the standard library. Every input file ending in `.in` receives a matching `.out`, processed in filename order. The sandbox defaults are `/input` and `/output`.
 
-The model deduplicates unchanged snapshots and fits robust lines to logit rates against log elapsed launch hours. Full-history and recent-day fits form a predictive mixture. Fit residuals, slope uncertainty, finite cohort noise and forecast distance contribute uncertainty. Optional objectives use a mixture with a saturating participation ceiling; platinum is constrained by its prerequisites.
+Round 2 separates earner counts from tracked-player counts: approximate earners are `printed_rate * players / 100`, with binomial and two-decimal rounding uncertainty. A single log-time player trajectory detects refresh steps at every age, using a four-standard-deviation count threshold; later cohort additions have declining log-time exposure. Continuous saturating earner curves keep observations across refreshes. The documented first refresh was **638 → 3,868 players (×6.06)**. Full-history and recent-day fits compete over unlock delays and three capacity hypotheses per kind, with capacities scaled from the latest cohort. Candidates are compared against the same complete history; a shorter window cannot win merely by dropping difficult observations. Fit-quality-weighted mixture CDFs yield quantiles of predicted earners divided by predicted players, capped at 100%. Platinum stays below every prerequisite at every quantile.
 
-An initial tiny cohort needs a separate treatment: a documented launch-night refresh expanded the denominator roughly sixfold. Before any refresh has been seen, a dilution prior and an unrefreshed upper-tail component describe that uncertainty. This launch-only prior is disabled when updated observations arrive. Fewer than three observations use the specified persistence fallback.
+For a stale tiny cohort, the documented dilution prior is retained, but the six-percent unrefreshed tail is removed. Its former mixture median is preserved analytically. Tail quantiles respect the printed rate's two-decimal bins, including exact zero. Measured on the supplied practice outputs, median implied logit **σ falls from 0.694373 to 0.446304**; all 110 practice medians are **exactly unchanged**. This measurement inverts each output as `(logit(q95) - logit(q05)) / (2 * 1.645)`; it is not a component-spread estimate or an official score.
 
-The kit supplies no answering reference or supported local grade. Official practice pinball loss, typical miss and coverage therefore remain unmeasured until a server grade. Synthetic stress checks are development diagnostics, not official scores or proof of final calibration. No competition entry is submitted by the validation script.
+Diffusion scales with the documented log refresh magnitude, amortized over a 30-day exposure assumption, rather than the house's fixed coefficient. One observed shock cannot identify a daily variance: that amortization and the future-refresh law remain modeling assumptions tested synthetically. Separate denominator risk grows with forecast player growth. Saturation uncertainty uses three ceilings (0.55/1/1.8 times the kind capacity, bounded above observed earners), rather than a point ceiling. Sparse reads retain the original persistence fallback, and rounded-zero trophies retain a delayed-wave component.
+
+## Component decisions
+
+Hierarchical slope shrinkage is implemented as an experimental candidate, **disabled by default** (`SHRINKAGE = False`). It pools noisy slopes toward information-weighted kind/onset means, uses observed-history rolling holdouts to gate pooling, and propagates the group prior into ceiling weights. It improved the target growth ablation but regressed on high-shock worlds, so it failed the requested no-regression ship rule. This revision therefore does **not** enable the requested hierarchical component. The explicit lower-tail asymmetry is also implemented but disabled (`ASYMMETRIC = False`): it helps the high-shock stress test but loses on ordinary long-horizon refresh/growth and delayed-unlock worlds. The selected model uses symmetric log-count-ratio innovations; bounded percentages need not have symmetric logit quantiles.
+
+The ceiling mixture is enabled: the point-ceiling ablation loses in every growth family. All candidates remain callable through `forecast` keyword options and are evaluated by `--ablations`; none requires extra dependencies.
 
 ## Validation
 
-After committing changes, run `python3 validate.py --input ../gta6-trophy-rarity-forecast-01-kit/gta6-trophy-rarity-forecast-01-kit/input`. The script runs the actual entrypoint twice in isolated Python mode, validates all 55 trophy rows per practice case, checks edge cases and reports separately labeled synthetic refresh and growth tests. It can also score a supplied answer file with `--answers answers.json`; that file must map each case id to a mapping of trophy id to actual percentage.
+The kit has no answer key. R2 has no locally measurable official practice loss, and no synthetic result establishes superiority to any house forecast on the real final. R1 and R2 below are evaluated on the **same generated count-space worlds**, not on the earlier rate-space diagnostics, whose numbers are not directly comparable. The two real practice cases contain only one unique historical snapshot and one shared real refresh; their repeated reads are not independent calibration evidence.
 
-The starter's official practice benchmark is approximately 1.51 logit pinball loss, 0.68 percentage points of median error and zero 90% coverage, as reported by the kit. We do not claim an official score from synthetic tests. Both practice cases share a stale initial snapshot and are not independent calibration experiments. Forecast ceilings and late-unlock uncertainty remain modeling assumptions to test against the final dataset.
+The simulator independently specifies log-time player growth, random-time refreshes centered on the observed first multiplier, smaller later cohort additions, varied true earner ceilings, binomial historical count noise, delayed unlocks, and future count innovations. It computes and rounds `100 * E / P` only after generating counts. Development initially used quieter historical noise; the reported release generator uses the actual binomial variance `E * (1 - E/P)`, with a small floor for zero counts. All random draws have fixed seeds. Trophy outcomes share the player trajectory, so the 3,300 scored trophies in each family are correlated; the sample is **60 simulated worlds**, not 3,300 independent experiments.
 
-Development diagnostics on 2026-11-19 (fixed seeds, hypothetical targets):
+### Synthetic count-space comparison
 
-| Synthetic scenario | Model loss | Baseline loss | Model median error, points | Model 90% coverage |
+| Family (60 trials each) | R1 loss | R2 loss | R1 miss, pp | R2 miss, pp | R1 coverage | R2 coverage |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Refresh-only | 0.247883 | 0.234296 | 0.057041 | 0.057041 | 0.948788 | 0.901515 |
+| Growth-only | 0.841984 | 0.611243 | 10.660475 | 9.353978 | 0.884848 | 0.916667 |
+| Refresh + growth | 0.820946 | 0.621531 | 9.846512 | 9.550012 | 0.899697 | 0.921818 |
+| Delayed unlock | 1.196151 | 0.626684 | 25.658781 | 10.135185 | 0.856364 | 0.923030 |
+| High shock | 1.543660 | 1.365515 | 18.648792 | 18.014531 | 0.749091 | 0.616061 |
+
+Loss is the competition's mean doubled logit pinball loss; miss is mean absolute median error in percentage points; coverage uses raw printed percentages. High-shock worlds have the same historical noise mechanism but larger unseen future innovations. Their low coverage is an explicit stress-test limitation, despite lower loss than R1; this is not a claim of universal 90% calibration.
+
+Synthetic real-refresh calibration (60 worlds, ratio centered on `638/3868`, shared log-ratio SD 0.40, per-trophy log-count SD 0.06): **R1 loss 0.247378 → R2 0.234274**, coverage **0.967273 → 0.911818**, identical median miss **0.059791 pp**. The broader refresh-only family uses SDs 0.42 and 0.10. These are hypothetical variations around one documented refresh, not 60 observed real refreshes.
+
+### Synthetic horizon holdouts
+
+Each horizon has 60 independently seeded worlds, cut at checkpoints 48/52/56/60 hours after launch. Ordinary future log-count innovations have SD `0.11 * sqrt(days)` for both players and earners; the high-shock family doubles this approximately to `0.23 * sqrt(days)`.
+
+| Horizon, minutes | R1 loss | R2 loss | R2 coverage |
+| --- | ---: | ---: | ---: |
+| 90 | 0.086899 | 0.087569 | 0.948485 |
+| 1,440 | 0.359789 | 0.289197 | 0.885455 |
+| 2,880 | 0.474410 | 0.369834 | 0.916061 |
+| 6,510 | 0.775914 | 0.607943 | 0.913636 |
+
+Coverage remains near 90% without a long-horizon collapse; loss increases with horizon. R2 does not beat R1 on the 90-minute trend holdout, and that small regression is retained in the table rather than hidden.
+
+### Synthetic component ablations (loss)
+
+| Family | Selected R2 / no shrink | Hierarchical candidate | Point ceiling | Explicit asymmetry |
 | --- | ---: | ---: | ---: | ---: |
-| Initial denominator refresh | 0.312804 | 1.370833 | 0.112641 | 0.932727 |
-| Growing log-time curves | 0.364789 | 0.690751 | 4.014174 | 0.983838 |
-| Larger future logit shocks | 0.548079 | 0.840553 | 7.254059 | 0.897980 |
-| Delayed unlock curves | 0.514985 | 0.905842 | 8.964855 | 0.977778 |
+| Refresh-only | 0.234296 | 0.234296 | 0.234296 | 0.234296 |
+| Growth-only | 0.611243 | 0.610992 | 0.702467 | 0.611421 |
+| Refresh + growth | 0.621531 | 0.620166 | 0.783216 | 0.636072 |
+| Delayed unlock | 0.626684 | 0.626677 | 0.763843 | 0.636455 |
+| High shock | 1.365515 | 1.368356 | 1.508609 | 1.338283 |
 
-These scenarios are chosen stress models, not samples from the game's eventual outcomes. Stronger synthetic performance does not establish superiority to any house forecast on the real final. The two provided practice cases pass the output contract and repeated execution checks; the original starter executable matches the diagnostic baseline for both cases. Local tests used Python 3.12.3 because Python 3.13 and Docker were unavailable; the entry uses only standard library interfaces available in Python 3.13.
+## Reproduce
+
+From this repository, run the required execution, shape, determinism, import, wallet, dense-history, calibration, and horizon checks, then the same worlds with component ablations:
+
+```sh
+python3 validate.py --input ../gta6-trophy-rarity-forecast-01-kit/gta6-trophy-rarity-forecast-01-kit/input
+python3 validate.py --input ../gta6-trophy-rarity-forecast-01-kit/gta6-trophy-rarity-forecast-01-kit/input --ablations
+```
+
+Both commands use 60 trials by default and exit nonzero when a selected-model release check fails. The second reproduces every table above. Family seeds start at 601100/602100/603100/604100/605100, calibration at 817210, and horizon holdouts at 902100; each trial adds its index. R1 is loaded into memory directly from immutable commit `26dd6075580872a40bac54a1550a89ef9203f15f`. No R1 files or submissions are changed. `--answers FILE` optionally scores a separately supplied mapping from case ids to trophy-id/actual-rate dictionaries; the kit supplies none.
+
+The execution check runs **`python3 -P -s main.py` twice in a clean environment** with `MAKEFUN_INPUT_DIR` and `MAKEFUN_OUTPUT_DIR` set. Both practice cases produce regular, byte-identical files with 55 valid rows each and 2,902 bytes per file. A 300-unique-snapshot count-space case completes in roughly 0.6 seconds locally; timings vary by machine. Empty/sparse/null histories, stale-read duplication, log-time slope recovery, and refreshes after hour 12 are checked. An AST audit examines every tracked Python file: all external imports are standard library modules. The existing wallet claim is verified without alteration.
+
+Tests ran on Python **3.12.3**. Python 3.13 and Docker are unavailable locally; 3.13 compatibility is inspected, not executed. No answer key, official R2 score, final superiority, prize eligibility, or transcript-gate result is claimed. Synthetic performance does not establish superiority on the real final. Bundling, sealing, submission, and repository About settings are left to the operator.
