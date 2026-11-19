@@ -79,7 +79,7 @@ def synthetic_refresh(cases):
     return {"model": metrics(pairs), "baseline": metrics(house)}
 
 
-def synthetic_growth(template):
+def synthetic_growth(template, future_shock=0.50, delayed=False):
     # Full-history, late-growth, and saturating curves exercise final-only paths.
     rng = random.Random(250119)
     pairs, house = [], []
@@ -100,7 +100,8 @@ def synthetic_growth(template):
         def rates(hour, noisy=False):
             result = []
             for ceiling, intercept, slope in curves:
-                z = intercept + slope * math.log1p(max(0, hour))
+                effective_hour = max(0, hour - 18) if delayed else max(0, hour)
+                z = intercept + slope * math.log1p(effective_hour)
                 if noisy:
                     z += rng.gauss(0, 0.06)
                 result.append(round(ceiling * main.percent(z) / 100, 2))
@@ -116,7 +117,7 @@ def synthetic_growth(template):
             case["history"].append(stale)
         actual_rates = rates(168)
         # The future is not guaranteed to stay on a noiseless fitted curve.
-        actual = {t["id"]: round(main.percent(main.logodds(y) + rng.gauss(0, 0.50)), 2) for t, y in zip(case["trophies"], actual_rates)}
+        actual = {t["id"]: round(main.percent(main.logodds(y) + rng.gauss(0, future_shock)), 2) for t, y in zip(case["trophies"], actual_rates)}
         output = main.forecast(case)
         check_shape(case, output)
         pairs.append((output, actual))
@@ -188,6 +189,8 @@ def run():
         report["official_practice_scores"] = "Unavailable: kit contains no reference; no submission authorized."
     report["synthetic_refresh_only"] = synthetic_refresh(cases)
     report["synthetic_growth_only"] = synthetic_growth(cases[0])
+    report["synthetic_high_shock_only"] = synthetic_growth(cases[0], future_shock=1.0)
+    report["synthetic_delayed_unlock_only"] = synthetic_growth(cases[0], delayed=True)
     print(json.dumps(report, indent=2))
 
 

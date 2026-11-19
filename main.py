@@ -36,7 +36,7 @@ def kind(trophy):
         return "story"
     if "100%" in desc or trophy.get("tier") in ("silver", "gold"):
         return "completion"
-    if desc.startswith("complete ") and "final mission for" not in desc:
+    if trophy.get("secret") and desc.startswith("complete ") and "final mission for" not in desc:
         return "story"
     return "optional"
 
