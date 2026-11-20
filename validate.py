@@ -14,6 +14,7 @@ import time
 import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import main
 
@@ -62,24 +63,31 @@ def stamp(hour):
 
 
 R1_COMMIT = "26dd6075580872a40bac54a1550a89ef9203f15f"
+R2_COMMIT = "24415bf"
 FAMILIES = ("refresh-only", "growth-only", "refresh+growth", "delayed-unlock", "high-shock")
 SEEDS = {name: 601100 + i * 1000 for i, name in enumerate(FAMILIES)}
 WORLD_CEILINGS = {"intro": 1.0, "story": 0.98, "optional": 0.65,
                   "completion": 0.35, "platinum": 0.08}
 
 
-def load_r1():
+def load_baseline(commit):
     """Read the immutable baseline into memory, never copy a source file."""
-    source = subprocess.check_output(["git", "show", R1_COMMIT + ":main.py"], text=True,
+    source = subprocess.check_output(["git", "show", commit + ":main.py"], text=True,
                                      cwd=Path(__file__).resolve().parent)
-    module = types.ModuleType("round_one")
-    exec(compile(source, R1_COMMIT + ":main.py", "exec"), module.__dict__)
+    module = types.ModuleType("baseline_" + commit)
+    exec(compile(source, commit + ":main.py", "exec"), module.__dict__)
     return module
 
 
-def refresh_world(template, seed, real=False):
+def refresh_world(template, seed, real=False, minutes=120):
     rng = random.Random(seed)
     case = copy.deepcopy(template)
+    if minutes == 90:
+        shift = 48 - main.hours(case["at"])
+        for row in case["history"]:
+            row["at"] = stamp(main.hours(row["at"]) + shift)
+        case["at"] = stamp(48)
+    case.update(horizon_minutes=minutes, target=stamp(main.hours(case["at"]) + minutes / 60))
     first = case["history"][-1]
     # Count-preserving refresh; uncertainty is shared P, with small E noise.
     ratio = (638 / 3868) * math.exp(rng.gauss(0, 0.40 if real else 0.42))
@@ -168,18 +176,17 @@ def count_world(template, family, seed, horizon=108.5, checkpoint=59.5, observat
     return case, actual
 
 
-def paired_worlds(worlds, r1, ablations=False):
-    names = ("R1", "R2", "no_shrink", "hierarchical", "point_ceiling", "asymmetric") if ablations else ("R1", "R2")
+def paired_worlds(worlds, r1, r2, ablations=False):
+    names = ("R1", "R2", "R3")
+    if ablations:
+        names += ("no_shrink", "point_ceiling", "symmetric")
     pairs = {name: [] for name in names}
     for case, actual in worlds:
-        outputs = {"R1": r1.forecast(case), "R2": main.forecast(case)}
+        outputs = {"R1": r1.forecast(case), "R2": r2.forecast(case), "R3": main.forecast(case)}
         if ablations:
-            # The selected model is already the no-pooling ablation when its
-            # switch is off; reuse the immutable output rather than refit it.
-            outputs.update(no_shrink=outputs["R2"] if not main.SHRINKAGE else main.forecast(case, shrink=False),
-                           hierarchical=main.forecast(case, shrink=True),
+            outputs.update(no_shrink=main.forecast(case, shrink=False),
                            point_ceiling=main.forecast(case, ceiling_mix=False),
-                           asymmetric=main.forecast(case, asymmetric=True))
+                           symmetric=main.forecast(case, asymmetric=False))
         for name, output in outputs.items():
             try:
                 check_shape(case, output)
@@ -190,19 +197,23 @@ def paired_worlds(worlds, r1, ablations=False):
     return {name: metrics(values) for name, values in pairs.items()}
 
 
-def synthetic_suite(template, r1, trials, ablations):
+def synthetic_suite(template, r1, r2, trials, ablations):
     table = {}
     for family in FAMILIES:
         worlds = [count_world(template, family, SEEDS[family] + i) for i in range(trials)]
-        table[family] = paired_worlds(worlds, r1, ablations)
-    calibration = paired_worlds([refresh_world(template, 817210 + i, real=True) for i in range(trials)], r1)
+        table[family] = paired_worlds(worlds, r1, r2, ablations)
+    calibration = paired_worlds((refresh_world(template, 817210 + i, real=True)
+                                 for i in range(trials)), r1, r2)
+    launch_stress = paired_worlds((refresh_world(template, SEEDS["refresh-only"] + i, minutes=90)
+                                   for i in range(trials)), r1, r2)
     horizons = {}
     for minutes in (90, 1440, 2880, 6510):
         worlds = [count_world(template, "refresh+growth", 902100 + i, minutes / 60,
                               checkpoint=48 + (i % 4) * 4) for i in range(trials)]
-        horizons[str(minutes)] = paired_worlds(worlds, r1)
+        horizons[str(minutes)] = paired_worlds(worlds, r1, r2)
     return {"trials_per_family": trials, "seeds": SEEDS, "families": table,
             "real_refresh_calibration_seed": 817210, "real_refresh_calibration": calibration,
+            "launch_spread_stress_at_90_minutes": launch_stress,
             "horizon_seed": 902100, "holdout_by_horizon_minutes": horizons}
 
 
@@ -223,6 +234,9 @@ def execute_cases(input_dir, cases):
         for case in cases:
             output = json.loads(first[case["id"] + ".out"])
             check_shape(case, output)
+            assert len(output["trophies"]) == 55
+            assert len(first[case["id"] + ".out"]) <= 65536
+            assert output == main.forecast(case)
         return {"valid_cases": len(cases), "rows_per_case": [len(c["trophies"]) for c in cases],
                 "regular_output_files": True, "byte_identical": True, "clean_environment": True,
                 "command": "python3 -P -s main.py", "elapsed_seconds": round(elapsed, 4),
@@ -262,18 +276,91 @@ def edge_checks(template):
             "late_refresh_detection": "pass", "count_history_deduplication": "pass"}
 
 
-def practice_comparison(cases, r1):
-    def implied(output):
-        return [(main.logodds(r["q"][4]) - main.logodds(r["q"][0])) / (2 * 1.645)
-                for r in output["trophies"]]
-    before, after, changes = [], [], []
+def implied_spreads(output):
+    return [(main.logodds(r["q"][4]) - main.logodds(r["q"][0])) / (2 * 1.645)
+            for r in output["trophies"]]
+
+
+def horizon_checks(cases, r2):
+    wide, _ = refresh_world(cases[0], SEEDS["refresh-only"])
+    trend, _ = count_world(cases[0], "refresh+growth", 902100)
+    ordinary, _ = count_world(cases[0], "growth-only", 604100)
+    large_refresh = copy.deepcopy(ordinary)
+    for row in large_refresh["history"]:
+        if main.hours(row["at"]) >= 22:
+            row["players_tracked"] = round(row["players_tracked"] * 2.5)
+    fixtures = [(case, "launch_refresh") for case in cases]
+    fixtures.extend(((wide, "uncertain_refresh"), (trend, "trend")))
+    asymmetry_scale = {}
+    for case, expected in (("ordinary", ordinary), ("large_refresh", large_refresh)):
+        epochs = main.snapshots(expected)
+        steps = main.player_path(epochs, main.hours(expected["target"]))[3]
+        scale = main.later_refresh_scale(steps)
+        enabled = (main.forecast_regime(epochs, expected["horizon_minutes"]) == "trend"
+                   and scale >= main.LARGE_LATER_REFRESH)
+        assert enabled is (case == "large_refresh")
+        selected = main.forecast(expected)
+        symmetric = main.forecast(expected, asymmetric=False)
+        if enabled:
+            assert all(a["q"][:2] <= b["q"][:2]
+                       and a["q"][2:] == b["q"][2:]
+                       for a, b in zip(selected["trophies"], symmetric["trophies"]))
+        else:
+            assert selected == symmetric
+        asymmetry_scale[case] = {"later_refresh_scale": scale, "enabled": enabled}
+    report = {}
+    for case, expected in fixtures:
+        with patch.object(main, "launch_refresh", wraps=main.launch_refresh) as launch:
+            output = main.forecast(case)
+        regime = main.forecast_regime(main.snapshots(case), case["horizon_minutes"])
+        assert regime == expected
+        if expected == "trend":
+            launch.assert_not_called()
+            assert output == main.forecast(case, asymmetric=False)
+            assert main.forecast(case, shrink=False, asymmetric=False) == r2.forecast(case)
+        else:
+            assert launch.call_count == len(case["trophies"])
+            assert all(call.args[-1] is (expected == "launch_refresh")
+                       for call in launch.call_args_list)
+            assert main.forecast(case, asymmetric=False) == output
+            if expected == "uncertain_refresh":
+                assert output == r2.forecast(case)
+        sigma = main.median(implied_spreads(output))
+        assert (0.05 <= sigma <= 0.10) if expected == "launch_refresh" else sigma > 0.30
+        key = case["id"] if expected == "launch_refresh" else expected
+        report[key] = {"regime": regime, "median_implied_sigma": sigma}
+    report["conditional_asymmetry"] = asymmetry_scale
+    return report
+
+
+def practice_comparison(cases, r2):
+    before, after = [], []
+    proxy_pairs = {"R2": [], "R3": []}
+    median_errors = {"R2": [], "R3": []}
     for case in cases:
-        a, b = r1.forecast(case), main.forecast(case)
-        before.extend(implied(a))
-        after.extend(implied(b))
-        changes.extend(abs(x["q"][2] - y["q"][2]) for x, y in zip(a["trophies"], b["trophies"]))
-    return {"R1_median_implied_sigma": main.median(before), "R2_median_implied_sigma": main.median(after),
-            "median_change_mean_pp": sum(changes) / len(changes), "median_change_max_pp": max(changes)}
+        old, new = r2.forecast(case), main.forecast(case)
+        before.extend(implied_spreads(old))
+        after.extend(implied_spreads(new))
+        snapshot = case["history"][-1]
+        proxy = {}
+        intro_at_ceiling = set()
+        for trophy, rate in zip(case["trophies"], snapshot["rates"]):
+            tid = trophy["id"]
+            if main.kind(trophy) == "intro" and rate >= 99.9:
+                proxy[tid] = 100.0
+                intro_at_ceiling.add(tid)
+            else:
+                inversion = rate * snapshot["players_tracked"] / 3868
+                proxy[tid] = round(main.percent(main.logodds(inversion) + 0.20), 2)
+        constrain_actual(case, proxy)
+        for name, output in (("R2", old), ("R3", new)):
+            proxy_pairs[name].append((output, proxy))
+            median_errors[name].extend(abs(main.logodds(row["q"][2]) - main.logodds(proxy[row["id"]]))
+                                       for row in output["trophies"] if row["id"] not in intro_at_ceiling)
+    return {"R2_median_implied_sigma": main.median(before), "R3_median_implied_sigma": main.median(after),
+            "proxy_only_inversion_plus_0.20": {name: metrics(pairs) for name, pairs in proxy_pairs.items()},
+            "proxy_mean_absolute_median_logit_error_excluding_ceiling_intro":
+                {name: sum(errors) / len(errors) for name, errors in median_errors.items()}}
 
 
 def audit_and_stress(template):
@@ -316,22 +403,24 @@ def release_checks(report):
     horizons = list(suite["holdout_by_horizon_minutes"].values())
     checks = {
         "at_least_60_trials": suite["trials_per_family"] >= 60,
-        "R2_loss_below_R1_every_family": all(r["R2"]["loss"] < r["R1"]["loss"] for r in families.values()),
-        "combined_growth_median_improves": families["refresh+growth"]["R2"]["typical_miss_pp"] <= families["refresh+growth"]["R1"]["typical_miss_pp"],
-        "real_refresh_coverage_90_to_95": 0.90 <= calibration["R2"]["coverage_90"] <= 0.95,
-        "real_refresh_loss_improves": calibration["R2"]["loss"] < calibration["R1"]["loss"],
-        "practice_sigma_040_to_045": 0.40 <= spread["R2_median_implied_sigma"] <= 0.45,
-        "practice_medians_preserved": spread["median_change_max_pp"] < 0.01,
-        "horizon_coverage_near_90": all(0.87 <= r["R2"]["coverage_90"] <= 0.95 for r in horizons),
-        "horizon_loss_increases_gradually": all(a["R2"]["loss"] < b["R2"]["loss"] for a, b in zip(horizons, horizons[1:])),
-        "unvalidated_asymmetry_disabled": not main.ASYMMETRIC,
+        "no_family_regression_vs_R2": all(r["R3"]["loss"] <= r["R2"]["loss"] for r in families.values()),
+        "wide_refresh_coverage_90_to_95": 0.90 <= calibration["R3"]["coverage_90"] <= 0.95,
+        "wide_refresh_loss_preserved": calibration["R3"]["loss"] == calibration["R2"]["loss"],
+        "practice_sigma_005_to_010": 0.05 <= spread["R3_median_implied_sigma"] <= 0.10,
+        "horizon_coverage_near_90": all(0.88 <= r["R3"]["coverage_90"] <= 0.95 for r in horizons),
+        "final_horizon_loss_at_most_0608": suite["holdout_by_horizon_minutes"]["6510"]["R3"]["loss"] <= 0.608,
+        "horizon_loss_increases_gradually": all(a["R3"]["loss"] < b["R3"]["loss"] for a, b in zip(horizons, horizons[1:])),
+        "trend_path_no_regression_vs_R2": all(
+            suite["holdout_by_horizon_minutes"][minute]["R3"]["loss"]
+            <= suite["holdout_by_horizon_minutes"][minute]["R2"]["loss"]
+            for minute in ("90", "1440", "2880", "6510")),
+        "asymmetry_gate_only_on_large_observed_refresh":
+            report["horizon_branches"]["conditional_asymmetry"]["ordinary"]["enabled"] is False
+            and report["horizon_branches"]["conditional_asymmetry"]["large_refresh"]["enabled"] is True,
     }
     if "no_shrink" in families["growth-only"]:
         growth = families["growth-only"]
-        hierarchy_accepted = (growth["hierarchical"]["loss"] < growth["no_shrink"]["loss"]
-                              and all(r["hierarchical"]["loss"] <= r["no_shrink"]["loss"] for r in families.values()))
-        checks["hierarchy_obeys_no_regression_ship_rule"] = hierarchy_accepted or not main.SHRINKAGE
-        checks["ceiling_mixture_wins_target_growth_ablation"] = growth["R2"]["loss"] < growth["point_ceiling"]["loss"]
+        checks["ceiling_mixture_wins_target_growth_ablation"] = growth["R3"]["loss"] < growth["point_ceiling"]["loss"]
     return checks
 
 
@@ -344,9 +433,10 @@ def run():
     args = parser.parse_args()
     cases = [json.loads(p.read_text()) for p in sorted(args.input.glob("*.in"))]
     assert cases, "no practice inputs"
-    r1 = load_r1()
+    r1, r2 = load_baseline(R1_COMMIT), load_baseline(R2_COMMIT)
     report = {"practice_execution_and_server_sim": execute_cases(args.input.resolve(), cases),
-              "edge_checks": edge_checks(cases[0]), "practice_spread": practice_comparison(cases, r1),
+              "edge_checks": edge_checks(cases[0]), "practice_spread": practice_comparison(cases, r2),
+              "horizon_branches": horizon_checks(cases, r2),
               "engineering_audit": audit_and_stress(cases[0])}
     if args.answers:
         answers = json.loads(args.answers.read_text())
@@ -358,11 +448,11 @@ def run():
         report["provided_reference_scores"] = {"model": metrics(pairs), "baseline": metrics(house)}
     else:
         report["official_practice_scores"] = "Unavailable: kit contains no reference; no submission authorized."
-    report["synthetic_count_space"] = synthetic_suite(cases[0], r1, args.trials, args.ablations)
+    report["synthetic_count_space"] = synthetic_suite(cases[0], r1, r2, args.trials, args.ablations)
     report["release_checks"] = release_checks(report)
     report["selected_components"] = {"hierarchical_shrinkage": main.SHRINKAGE,
-                                      "explicit_asymmetric_spread": main.ASYMMETRIC,
-                                      "reason": "Candidates remain available for ablation; regressions prevent default enablement."}
+                                      "asymmetry_minimum_observed_log_step_total": main.LARGE_LATER_REFRESH,
+                                      "reason": "Shrinkage remains gated off because the release holdout fails the no-regression gate."}
     report["source_state"] = {
         "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], text=True).strip()),

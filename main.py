@@ -76,8 +76,10 @@ FIRST_JUMP = 3868 / 638
 DIFFUSION = math.log(FIRST_JUMP) / math.sqrt(24 * 30)
 CEILINGS = {"intro": 1.0, "story": 0.98, "optional": 0.65,
             "completion": 0.35, "platinum": 0.08}
-ASYMMETRIC = False  # Enabled only if the paired long-horizon ablation wins.
-SHRINKAGE = False  # Candidate retained; high-shock ablation failed no-regression.
+SHRINKAGE = False  # The rolling holdout did not establish no-regression.
+LARGE_LATER_REFRESH = math.log(1.5)
+LAUNCH_GROWTH = {"intro": 0.16, "story": 0.22, "optional": 0.19,
+                 "completion": 0.17, "platinum": 0.15}
 
 
 def player_path(epochs, target):
@@ -266,26 +268,39 @@ def count_quantiles(components):
     return result
 
 
-def launch_refresh(last, group, days, population):
+def forecast_regime(epochs, horizon_minutes):
+    if len(epochs) == 1 and max(1, epochs[0][1].get("players_tracked", 1)) < 1500:
+        launch_window = epochs[0][0] <= 6
+        return "launch_refresh" if launch_window and horizon_minutes == 90 else "uncertain_refresh"
+    return "trend"
+
+
+def later_refresh_scale(steps):
+    # Match the player path's exclusion of launch-sized syncs. A smaller
+    # first detected jump can still be evidence in a partial history.
+    return sum(log_step for _, excess, log_step in steps
+               if excess > 0 and 0 < log_step < math.log(3))
+
+
+def launch_refresh(last, group, days, population, calibrated):
     # RULES documents a roughly sixfold first refresh, not a trophy answer table.
     dilution = min(0.65, max(0.08, population / 3868))
     center = logodds(last * dilution)
-    spread = math.hypot(0.440, DIFFUSION * math.sqrt(days))
-    if group == "platinum":
-        center -= 0.12
-        spread = math.hypot(spread, 0.25)
-    elif group == "story":
-        center += 0.22
-    elif group == "optional":
-        center += 0.15
+    diffusion = DIFFUSION * math.sqrt(days)
     if group == "intro" and last >= 99.9:
+        spread = math.hypot(0.440, diffusion)
         return [round(percent(logodds(last) + z * spread), 6) for z in ZS[:4]] + [100.0]
-    # Removing the unrefreshed six-percent component also moves its mixture
-    # median. Retain that old median analytically, without its inflated tails.
-    old_spread = math.hypot(0.50, 0.5 * math.sqrt(days))
-    if group == "platinum":
-        old_spread = math.hypot(old_spread, 0.25)
-    center += old_spread * NORMAL.inv_cdf(0.5 / 0.94)
+    if calibrated:
+        center += LAUNCH_GROWTH[group]
+        spread = math.hypot(0.075, diffusion)
+    else:
+        spread = math.hypot(0.440, diffusion)
+        center += {"platinum": -0.12, "story": 0.22, "optional": 0.15}.get(group, 0)
+        old_spread = math.hypot(0.50, 0.5 * math.sqrt(days))
+        if group == "platinum":
+            spread = math.hypot(spread, 0.25)
+            old_spread = math.hypot(old_spread, 0.25)
+        center += old_spread * NORMAL.inv_cdf(0.5 / 0.94)
     result = mixture_quantiles(((1, center, spread),))
     # The scored variable is the printed two-decimal rate. In particular its
     # zero atom must be represented even when the latent earn rate is positive.
@@ -300,7 +315,11 @@ def forecast(case, *, shrink=None, ceiling_mix=True, asymmetric=None):
     days = max(0, (target - checkpoint) / 24)
     rw = DIFFUSION * math.sqrt(days)
     history, epochs, rows = case.get("history", []), snapshots(case), []
-    population_future, player_growth, step_risk, _ = player_path(epochs, target)
+    regime = forecast_regime(epochs, round((target - checkpoint) * 60))
+    population_future, player_growth, step_risk, steps = player_path(epochs, target)
+    refresh_scale = later_refresh_scale(steps)
+    use_asymmetry = (regime == "trend" and asymmetric is not False
+                     and refresh_scale >= LARGE_LATER_REFRESH)
     fits = []
     for index, trophy in enumerate(case["trophies"]):
         points = [(t, float(r["rates"][index]) * max(1, r.get("players_tracked", 1)) / 100,
@@ -309,7 +328,6 @@ def forecast(case, *, shrink=None, ceiling_mix=True, asymmetric=None):
         fits.append(earner_fits(points, kind(trophy), points[-1][2], target, ceiling_mix)
                     if len(points) >= 5 else [])
     priors = group_priors(fits, case["trophies"]) if shrink else {}
-    use_asymmetry = ASYMMETRIC if asymmetric is None else asymmetric
     for index, trophy in enumerate(case["trophies"]):
         available = [r for r in history if index < len(r["rates"]) and r["rates"][index] is not None]
         group = kind(trophy)
@@ -320,8 +338,8 @@ def forecast(case, *, shrink=None, ceiling_mix=True, asymmetric=None):
             rows.append({"id": trophy["id"], "q": q})
             continue
         population = max(1, available[-1].get("players_tracked", 1))
-        if len(epochs) == 1 and population < 1500:
-            q = launch_refresh(last, group, days, population)
+        if regime != "trend":
+            q = launch_refresh(last, group, days, population, regime == "launch_refresh")
         else:
             candidates = fits[index]
             if not candidates:
