@@ -24,7 +24,7 @@ The supplied kit has no answer key, so it cannot provide an official practice lo
 
 Hierarchical slope shrinkage remains available through the observed-history rolling holdout gate, but is **disabled for this release** (`SHRINKAGE = False`): the 60-world no-regression comparison did not justify selecting it. Conditional lower-tail dilution is enabled only on multi-snapshot trend cases whose own detected positive later-refresh log steps total at least `log(1.5)`; the practice cases do not meet that condition. The trend spread law, ceiling mixture, intro-100% behavior, platinum constraint, and stale-read deduplication remain intact.
 
-The ceiling mixture is enabled: the point-ceiling ablation loses in every growth family. All candidates remain callable through `forecast` keyword options and are evaluated by `--ablations`; none requires extra dependencies.
+The ceiling mixture is enabled: the point-ceiling ablation loses in every growth family. The R2 component table below is a historical reference; its explicit asymmetry column was a global ablation. R3 keeps the conditional version and validates its behavior on ordinary and large-refresh histories rather than enabling that global ablation.
 
 ## Validation
 
@@ -61,7 +61,7 @@ Each horizon has 60 independently seeded worlds, cut at checkpoints 48/52/56/60 
 
 Coverage remains near 90% without a long-horizon collapse; loss increases with horizon. R2 does not beat R1 on the 90-minute trend holdout, and that small regression is retained in the table rather than hidden.
 
-### Synthetic component ablations (loss)
+### Round 2 synthetic component ablations (historical loss)
 
 | Family | Selected R2 / no shrink | Hierarchical candidate | Point ceiling | Explicit asymmetry |
 | --- | ---: | ---: | ---: | ---: |
@@ -80,7 +80,7 @@ python3 validate.py --input ../gta6-trophy-rarity-forecast-01-kit/gta6-trophy-ra
 python3 validate.py --input ../gta6-trophy-rarity-forecast-01-kit/gta6-trophy-rarity-forecast-01-kit/input --ablations
 ```
 
-Both commands use 60 trials by default and exit nonzero when a selected-model release check fails. The second reproduces every table above. Family seeds start at 601100/602100/603100/604100/605100, calibration at 817210, and horizon holdouts at 902100; each trial adds its index. R1 and R2 are loaded into memory directly from immutable commits `26dd6075580872a40bac54a1550a89ef9203f15f` and `24415bf`. No baseline files or submissions are changed. `--answers FILE` optionally scores a separately supplied mapping from case ids to trophy-id/actual-rate dictionaries; the kit supplies none.
+Both commands use 60 trials by default and exit nonzero when a selected-model release check fails. The second reports the R3 family results and current candidate ablations; the explicitly labeled Round 2 table above is a historical reference. Family seeds start at 601100/602100/603100/604100/605100, calibration at 817210, and horizon holdouts at 902100; each trial adds its index. R1 and R2 are loaded into memory directly from immutable commits `26dd6075580872a40bac54a1550a89ef9203f15f` and `24415bf`. No baseline files or submissions are changed. `--answers FILE` optionally scores a separately supplied mapping from case ids to trophy-id/actual-rate dictionaries; the kit supplies none.
 
 The execution check runs **`python3 -P -s main.py` twice in a clean environment** with `MAKEFUN_INPUT_DIR` and `MAKEFUN_OUTPUT_DIR` set. Both practice cases produce regular, byte-identical files with 55 valid rows each and 2,906 bytes per file. A 300-unique-snapshot count-space case completes in under one second locally; timings vary by machine. Empty/sparse/null histories, stale-read duplication, log-time slope recovery, horizon regimes, and refreshes after hour 12 are checked. An AST audit examines every tracked Python file: all external imports are standard library modules. The existing wallet claim is verified without alteration.
 
